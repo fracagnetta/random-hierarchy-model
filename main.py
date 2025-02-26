@@ -37,8 +37,6 @@ def run( args):
         assert args.test_size > 0, 'bonus measures require non empty test set!'
         args.bonus = {}
         args.bonus['size'] = args.test_size
-        if args.rules:
-            args.bonus['rules'] = None
         if args.tree:
             args.bonus['tree'] = None
         if args.noise:
@@ -225,8 +223,9 @@ parser.add_argument('--max_epochs', type=int, default=100)
 '''
 parser.add_argument('--print_freq', type=int, help='frequency of prints', default=16)
 parser.add_argument('--save_freq', type=int, help='frequency of saves', default=2)
-parser.add_argument('--bonus', default=False, action='store_true')
 parser.add_argument('--rules', default=False, action='store_true')
+parser.add_argument('--check_rules', default=False, action='store_true')
+parser.add_argument('--bonus', default=False, action='store_true')
 parser.add_argument('--noise', default=False, action='store_true')
 parser.add_argument('--synonyms', default=False, action='store_true')
 parser.add_argument('--tree', default=False, action='store_true')

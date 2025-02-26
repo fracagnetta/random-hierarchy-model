@@ -48,7 +48,7 @@ def sample_data_from_labels( labels, rules, probability):
     Create data of the Random Hierarchy Model starting from class labels and a set of rules. Rules are chosen according to probability.
 
     Args:
-        lables: A tensor of size [batch_size, I], with I from 0 to num_classes-1 containing the class labels of the data to be sampled.
+        labels: A tensor of size [batch_size, I], with I from 0 to num_classes-1 containing the class labels of the data to be sampled.
         rules: A dictionary containing the rules for each level of the hierarchy.
         probability: A dictionary containing the distribution of the rules for each level of the hierarchy.
 
@@ -71,7 +71,7 @@ def sample_data_from_labels_unif( labels, rules):
     Create data of the Random Hierarchy Model starting from class labels and a set of rules. Rules are chosen uniformly at random for each level.
 
     Args:
-        lables: A tensor of size [batch_size, I], with I from 0 to num_classes-1 containing the class labels of the data to be sampled.
+        labels: A tensor of size [batch_size, I], with I from 0 to num_classes-1 containing the class labels of the data to be sampled.
         rules: A dictionary containing the rules for each level of the hierarchy.
 
     Returns:
@@ -237,8 +237,7 @@ class RandomHierarchyModel(Dataset):
 
         else:
 
-            assert not bonus, "bonus data only implemented for sampling without replacement"
-            # TODO: implement bonus data for sampling with replacement
+            # TODO: implement synonymic and noisy data for sampling with replacement
             torch.manual_seed(seed_sample)
             if train_size == -1:
                 labels = torch.randint(low=0, high=num_classes, size=(max_data + test_size,))

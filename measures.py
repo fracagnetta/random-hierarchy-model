@@ -100,3 +100,86 @@ def sensitivity( model, data, transformed, device):
             result[l+1][k] = sensitivity.mean(dim=0)
 
     return result
+
+def check_rules_clean( samples, rules):
+    """
+    Check if clean samples are consistent the production rules of the grammar.
+
+    Args:
+        samples: A tensor of size (B,d,v).
+        rules: A dictionary of production rules (tensors of size (v,m,s)) with keys 0,...,L-1.
+               rules[l]_{i,j} = s-tuple produced by the j-th rule emanating from i.
+
+    Returns:
+        level_accuracy: A dictionary of accuracies (tensors of size (s**l)) with keys 0,...,L-1.
+                        level_accuracy[l]_{i} = fraction of compatible rules in position i
+        rules_frequencies: A dictionary of rules occurrencies (tensors of size (v*m)) with keys 0,...,L-1.
+    """
+    B, d, v = samples.shape
+    samples = F.one_hot(samples.argmax(dim=2),num_classes=v)
+    L = len(rules)
+    v, m, s = rules[0].shape
+    upwd_messages = samples.permute(2,0,1).flatten(start_dim=1) # initial upward messages, size (v,B*s**L)
+
+    level_accuracy = {}
+    rules_frequencies = {}
+
+    for l in range(L-1,-1,-1):
+
+        rules_flat = rules[l].reshape(-1, s)
+        prob_rules = upwd_messages.reshape(v,-1,s).transpose(1,2)
+        prob_rules = prob_rules[rules_flat, torch.arange(s)].squeeze().prod(1)
+        prob_rules = prob_rules.reshape(v,m,-1)
+        upwd_messages = prob_rules.sum(dim=1) # messages for the next level, size (v, B*s**(L-l))
+
+        prob_rules = prob_rules.reshape(v,m,B,-1)
+        level_accuracy[l] = prob_rules.sum(dim=(0,1,2)) / B # size (s**l)
+        rules_frequencies[l] = prob_rules.sum(dim=(2,3)).flatten() # size (v*m)
+    
+    return level_accuracy, rules_frequencies
+
+def test_rules( rules, model, model_name, dataloader, device):
+    """
+    Test the compatibility of predictions with the rules.
+    
+    Returns:
+        
+    """
+    model.eval()
+    L = len(rules)
+    v, m, s = rules[0].shape
+    rules_accuracy = {}
+    rules_frequency = {}
+    num_batches = 0
+    for l in range(L):
+        rules_accuracy[l] = torch.zeros(s**l, device=device)
+        rules_frequency[l] = torch.zeros(v*m, device=device)
+   
+    with torch.no_grad():
+        for inputs, targets in dataloader:
+            inputs, targets = inputs.to(device), targets.to(device)
+
+            outputs = model(inputs)
+            _, predictions = outputs.max(1) # TODO: sample predictions instead of taking the max?
+            
+            if 'fcn' in model_name:
+                inputs = inputs.reshape(B,-1,v)
+                inputs = torch.cat((inputs,F.one_hot(predictions, num_classes=v).view(-1,1,v)),dim=1)
+
+            elif 'transformer' in model_name:
+                inputs[:,-1,:] = F.one_hot(predictions, num_classes=v)
+
+            elif 'hcnn' in model_name:
+                inputs = inputs.transpose(1,2)
+                inputs[:,-1,:] = F.one_hot(predictions, num_classes=v)
+            
+            r_acc, r_freq = check_rules_clean(inputs, rules)
+            for l in range(L):
+                rules_accuracy[l] += r_acc[l]
+                rules_frequency[l] += r_freq[l]
+            num_batches += 1
+    
+    for l in range(L):
+        rules_accuracy[l] /= num_batches
+
+    return rules_accuracy, rules_frequency

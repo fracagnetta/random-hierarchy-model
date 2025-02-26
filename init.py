@@ -70,6 +70,8 @@ def init_data(args):
             replacement=args.replacement,	# Automatically true for num_data > 1e19
             bonus=args.bonus			# bonus dictionary
         )
+        if args.rules:
+            args.rules = dataset.rules
 
         args.input_size = args.tuple_size**args.num_layers
         if args.num_tokens < args.input_size:	# only take last num_tokens positions
@@ -130,8 +132,6 @@ def init_data(args):
         # TODO: append classification token to input for transformers used in class
 
     if args.bonus:
-        if 'rules' in args.bonus:
-            args.bonus['rules'] = dataset.rules
         if 'synonyms' in args.bonus:
             for k in args.bonus['synonyms'].keys():
                 args.bonus['synonyms'][k] = args.bonus['synonyms'][k].to(args.device)
@@ -290,6 +290,10 @@ def init_output( model, criterion, train_loader, test_loader, args):
             print_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'], args.device)
         if 'noise' in args.bonus:
             print_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'], args.device)
+    if args.check_rules:
+        rules_acc, rules_freq = measures.test_rules(args.rules, model, args.model, test_loader, args.device)
+        print_dict['accuracy'] = rules_acc
+        # print_dict['frequency'] = rules_freq # TODO: what to do with frequency?
     dynamics = [print_dict]
 
     best = {'step':0, 'model': None, 'loss': testloss}
