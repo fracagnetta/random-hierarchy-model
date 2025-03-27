@@ -41,6 +41,25 @@ def test( model, dataloader, device):
     return loss / total, 1.0 * correct / total
 
 
+def predict( model, data, device):
+    """
+
+    Args:
+        model: The model (multilayer attention only).
+        data: The original input data.
+
+    Returns:
+
+    """
+    model.eval()
+    with torch.no_grad():
+
+        outputs = model(data.to(device))
+        _, predictions = outputs.max(1)
+
+    return predictions
+
+
 def sensitivity( model, data, transformed, device):
     """
     Compute the cosine similarity of the model activations when acting on original and transformed data.

@@ -43,6 +43,8 @@ def run( args):
             args.bonus['noise'] = None
         if args.synonyms:
             args.bonus['synonyms'] = None
+        if args.generate:
+            args.bonus['generate'] = None
 
     train_loader, test_loader = init.init_data( args)
 
@@ -114,6 +116,8 @@ def run( args):
                                 save_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'], args.device)
                             if 'noise' in args.bonus:
                                 save_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'], args.device)
+                            if 'generate' in args.bonus:
+                                save_dict['predictions'] = measures.predict( model, args.bonus['features'], args.device)
                         dynamics.append(save_dict)
 
                         if args.checkpoints:
@@ -147,6 +151,8 @@ def run( args):
                     save_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'], args.device)
                 if 'noise' in args.bonus:
                     save_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'], args.device)
+                if 'generate' in args.bonus:
+                    save_dict['predictions'] = measures.predict( model, args.bonus['features'], args.device)
             dynamics.append(save_dict)
 
             if args.checkpoints:
@@ -229,6 +235,7 @@ parser.add_argument('--bonus', default=False, action='store_true')
 parser.add_argument('--noise', default=False, action='store_true')
 parser.add_argument('--synonyms', default=False, action='store_true')
 parser.add_argument('--tree', default=False, action='store_true')
+parser.add_argument('--generate', default=False, action='store_true')
 parser.add_argument('--checkpoints', default=False, action='store_true')
 parser.add_argument('--loss_threshold', type=float, default=1e-3)
 parser.add_argument('--outname', type=str, required=True, help='path of the output file')
