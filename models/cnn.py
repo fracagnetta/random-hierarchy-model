@@ -59,6 +59,8 @@ class hCNN(nn.Module):
         """
         super().__init__()
 
+        self.num_layers = num_layers
+
         receptive_field = patch_size**num_layers
         assert input_dim % receptive_field == 0, 'patch_size**num_layers must divide input_dim!'
 

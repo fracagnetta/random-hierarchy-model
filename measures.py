@@ -80,18 +80,28 @@ def sensitivity( model, data, transformed, device):
 
         for l in range(model.num_layers):
 
-            act_o = model.blocks[l](act_o)	# compute activations on originals
+            if hasattr(model, 'blocks'):
+                act_o = model.blocks[l](act_o)	# compute activations on originals
+            elif hasattr(model, 'hidden'):
+                act_o = model.hidden[l](act_o)
             x = whiten(act_o, eps)
 
             result[l] = {}
             for k in transformed.keys():
 
-                act_t[k] = model.blocks[l](act_t[k])			# compute the transformed activations...
-                x_t = whiten(act_t[k], eps)				# ...whiten over batch dimension...
-                sensitivity = F.cosine_similarity(x, x_t, dim=2)	# ...and compute cosine_sim with originals
+                if hasattr(model, 'blocks'):
+                    act_t[k] = model.blocks[l](act_t[k])	# compute the transformed activations...
+                    x_t = whiten(act_t[k], eps)				# ...whiten over batch dimension...
+                    sensitivity = F.cosine_similarity(x, x_t, dim=2)	# ...and compute cosine_sim with originals
+
+                elif hasattr(model, 'hidden'):
+                    act_t[k] = model.hidden[l](act_t[k])
+                    x_t = whiten(act_t[k], eps)				# ...whiten over batch dimension...
+                    sensitivity = F.cosine_similarity(x, x_t, dim=1)	# ...and compute cosine_sim with originals
+
                 result[l][k] = sensitivity.mean(dim=0) # TODO: sum instead of mean for batching
 
-        x = whiten(model(data), eps)	# same for model output
+        x = whiten(model(data.to(device)), eps)	# same for model output
         result[l+1] = {}
         for k in transformed.keys():
 
