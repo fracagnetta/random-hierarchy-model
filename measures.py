@@ -198,7 +198,7 @@ def test_rules( rules, model, model_name, dataloader, device):
             elif 'transformer' in model_name:
                 inputs[:,-1,:] = F.one_hot(predictions, num_classes=v)
 
-            elif 'hcnn' in model_name:
+            elif ('hcnn' in model_name) or ('hlcn' in model_name):
                 inputs = inputs.transpose(1,2)
                 inputs[:,-1,:] = F.one_hot(predictions, num_classes=v)
             
