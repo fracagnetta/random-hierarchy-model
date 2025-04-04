@@ -66,7 +66,7 @@ def sample_data_from_labels( labels, rules, probability):
     return features, labels
 
 
-def sample_data_from_labels_unif( labels, rules):
+def sample_data_from_labels_unif( labels, rules, bonus):
     """
     Create data of the Random Hierarchy Model starting from class labels and a set of rules. Rules are chosen uniformly at random for each level.
 
@@ -81,9 +81,59 @@ def sample_data_from_labels_unif( labels, rules):
 
     features = labels
 
+    if bonus:		# extra output for additional measures
+        if 'size' not in bonus.keys():
+            bonus['size'] = samples.size(0)
+        if 'tree' in bonus:
+            tree = {}
+            bonus['tree'] = tree
+        if 'noise' in bonus:	# add corrupted versions of the last bonus[-1] data
+            noise = {}
+            noise[L] = copy.deepcopy(features[-bonus['size']:])	# copy current representation (labels)...
+            noise[L][:] = torch.randint(rules[0].shape[0], (bonus['size'],))	# ...and randomly change it
+            bonus['noise'] = noise
+        if 'synonyms' in bonus:	# add synonymic versions of the last bonus[-1] data
+            synonyms = {}
+            bonus['synonyms'] = synonyms
+
     for l in range(L):
+
         chosen_rule = torch.randint(low=0, high=rules[l].shape[1], size=features.shape) # Choose a random rule for each variable in the current level
+
+        if bonus:
+            if 'tree' in bonus:
+                tree[L-l] = copy.deepcopy(features[-bonus['size']:])
+
+            if 'synonyms' in bonus:
+
+                for ell in synonyms.keys():	# propagate modified data down the tree TODO: randomise whole downstream propagation
+                    synonyms[ell] = rules[l][synonyms[ell], chosen_rule[-bonus['size']:]].flatten(start_dim=1)
+
+                synon_rule =  copy.deepcopy(chosen_rule[-bonus['size']:]) 		# copy current representation indices...
+                if l==0:
+                    synon_rule[:] = torch.randint(rules[l].shape[1], (synon_rule.size(0),))		# ... and randomly change it (only one index at the highest level)
+                else:
+                    synon_rule[:,-2] = torch.randint(rules[l].shape[1], (synon_rule.size(0),))	# ... and randomly change the next-to-last
+
+                synonyms[L-l] =  copy.deepcopy(features[-bonus['size']:])
+                synonyms[L-l] = rules[l][synonyms[L-l], synon_rule].flatten(start_dim=1)
+                #TODO: add custom positions for 'synonyms'
+
         features = rules[l][features, chosen_rule].flatten(start_dim=1)                 # Apply the chosen rule to each variable in the current level
+
+        if bonus:
+            if 'noise' in bonus:
+
+                for ell in noise.keys():	# propagate modified data down the tree TODO: randomise whole downstream propagation
+                    noise[ell] = rules[l][noise[ell], chosen_rule[-bonus['size']:]]
+                    noise[ell] = noise[ell].flatten(start_dim=1)
+
+                noise[L-l-1] =  copy.deepcopy(features[-bonus['size']:])	# copy current representation ...
+                noise[L-l-1][:,-2] = torch.randint(rules[l].shape[0], (bonus['size'],))     # ... and randomly change the next-to-last feature
+                #TODO: rules[l].shape[0] not v in general!!! FIX IT!
+                #TODO: add custom positions for 'noise'
+
+
     return features, labels
 
 
@@ -245,9 +295,9 @@ class RandomHierarchyModel(Dataset):
                 labels = torch.randint(low=0, high=num_classes, size=(train_size + test_size,))
             if probability is None:
                 self.features, self.labels = sample_data_from_labels_unif(
-                    labels, self.rules
+                    labels, self.rules, bonus
                 )
-            else:
+            else:   # TODO: implement synonymic and noisy data for arbitrary distribution
                 self.probability = probability
                 self.features, self.labels = sample_data_from_labels(
                     labels, self.rules, self.probability
