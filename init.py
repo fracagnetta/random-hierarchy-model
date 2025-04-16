@@ -280,11 +280,13 @@ def init_output( model, criterion, train_loader, test_loader, args):
     Returns:
         list with the dynamics, best model.
     """
-
-    trainloss, trainacc = measures.test(model, train_loader, args.device)
     testloss, testacc = measures.test(model, test_loader, args.device)
-    
-    print_dict = {'t': 0, 'trainloss': trainloss, 'trainacc': trainacc, 'testloss': testloss, 'testacc': testacc}
+
+    if args.max_epochs==1:
+        print_dict = {'t': 0, 'testloss': testloss, 'testacc': testacc}
+    else:
+        trainloss, trainacc = measures.test(model, train_loader, args.device)
+        print_dict = {'t': 0, 'trainloss': trainloss, 'trainacc': trainacc, 'testloss': testloss, 'testacc': testacc}
 
     if args.bonus:
         if 'synonyms' in args.bonus:

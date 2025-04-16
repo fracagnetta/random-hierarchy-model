@@ -109,8 +109,11 @@ def run( args):
 
                         print(f'Checkpoint at step {step}, saving data ...')
 
-                        train_loss, train_acc = measures.test(model, train_loader, args.device)
-                        save_dict = {'t': step, 'trainloss': train_loss, 'trainacc': train_acc, 'testloss': test_loss, 'testacc': test_acc}
+                        if args.max_epochs==1:
+                            save_dict = {'t': step, 'testloss': test_loss, 'testacc': test_acc}
+                        else:
+                            train_loss, train_acc = measures.test(model, train_loader, args.device)
+                            save_dict = {'t': step, 'trainloss': train_loss, 'trainacc': train_acc, 'testloss': test_loss, 'testacc': test_acc}
                         if args.bonus:
                             if 'synonyms' in args.bonus:
                                 save_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'], args.device)
@@ -144,8 +147,11 @@ def run( args):
 
         if (running_loss/(batch_idx+1)) <= args.loss_threshold:
 
-            train_loss, train_acc = measures.test(model, train_loader, args.device)
-            save_dict = {'t': step, 'trainloss': train_loss, 'trainacc': train_acc, 'testloss': test_loss, 'testacc': test_acc}
+            if args.max_epochs==1:
+                save_dict = {'t': step, 'testloss': test_loss, 'testacc': test_acc}
+            else:
+                train_loss, train_acc = measures.test(model, train_loader, args.device)
+                save_dict = {'t': step, 'trainloss': train_loss, 'trainacc': train_acc, 'testloss': test_loss, 'testacc': test_acc}
             if args.bonus:
                 if 'synonyms' in args.bonus:
                     save_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'], args.device)
@@ -223,7 +229,7 @@ parser.add_argument('--accumulation', type=int, default=1)
 parser.add_argument('--momentum', type=float, default=0.0)
 parser.add_argument('--scheduler', type=str, default=None)
 parser.add_argument('--scheduler_time', type=int, default=None)
-parser.add_argument('--max_epochs', type=int, default=100)
+parser.add_argument('--max_epochs', type=int, default=1)
 '''
 	OUTPUT ARGS
 '''
