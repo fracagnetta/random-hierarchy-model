@@ -25,6 +25,7 @@ import measures
 
 def run( args):
 
+    init_args = copy.deepcopy(args)
     # reduce batch_size when larger than train_size
     if (args.batch_size >= args.train_size):
         args.batch_size = args.train_size
@@ -139,8 +140,14 @@ def run( args):
                                 'dynamics': dynamics,
                                 'step': step
                             }
+                            if init_args.rules:
+                                output['rules'] = args.rules
+                            if init_args.generate:
+                                output['features'] = args.bonus['features'].argmax(dim=1)
+                                output['features'][:,-1] = args.bonus['labels']
+
                             with open(args.outname, "wb") as handle:
-                                pickle.dump(args, handle)
+                                pickle.dump(init_args, handle)
                                 pickle.dump(output, handle)
                         save_ckpt = next(save_ckpts)
 

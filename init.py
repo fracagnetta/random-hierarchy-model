@@ -283,24 +283,24 @@ def init_output( model, criterion, train_loader, test_loader, args):
     testloss, testacc = measures.test(model, test_loader, args.device)
 
     if args.max_epochs==1:
-        print_dict = {'t': 0, 'testloss': testloss, 'testacc': testacc}
+        save_dict = {'t': 0, 'testloss': testloss, 'testacc': testacc}
     else:
         trainloss, trainacc = measures.test(model, train_loader, args.device)
-        print_dict = {'t': 0, 'trainloss': trainloss, 'trainacc': trainacc, 'testloss': testloss, 'testacc': testacc}
+        save_dict = {'t': 0, 'trainloss': trainloss, 'trainacc': trainacc, 'testloss': testloss, 'testacc': testacc}
 
     if args.bonus:
         if 'synonyms' in args.bonus:
-            print_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'], args.device)
+            save_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'], args.device)
         if 'noise' in args.bonus:
-            print_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'], args.device)
+            save_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'], args.device)
         if 'generate' in args.bonus:
-            print_dict['predictions'] = measures.predict( model, args.bonus['features'], args.device)
+            save_dict['predictions'] = measures.predict( model, args.bonus['features'], args.device)
     
     if args.check_rules:
         rules_acc, rules_freq = measures.test_rules(args.rules, model, args.model, test_loader, args.device)
-        print_dict['accuracy'] = rules_acc
-        # print_dict['frequency'] = rules_freq # TODO: what to do with frequency?
-    dynamics = [print_dict]
+        save_dict['accuracy'] = rules_acc
+        # save_dict['frequency'] = rules_freq # TODO: what to do with frequency?
+    dynamics = [save_dict]
 
     best = {'step':0, 'model': None, 'loss': testloss}
 
