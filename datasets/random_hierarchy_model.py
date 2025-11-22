@@ -8,7 +8,6 @@ import random
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset
 
 from .utils import dec2bin, dec2base, base2dec
 
@@ -27,6 +26,7 @@ def sample_rules( v, n, m, s, L, seed=42):
 
         Returns:
             A dictionary containing the rules for each level of the hierarchy.
+            rules[l] is a tensor of size (v,m,s).
         """
         random.seed(seed)
         tuples = list(product(*[range(v) for _ in range(s)]))
@@ -43,30 +43,48 @@ def sample_rules( v, n, m, s, L, seed=42):
         return rules
 
 
-def sample_data_from_labels( labels, rules, probability):
+def sample_trees( num_data, rules, prior=None, probs=None, seed=42):
     """
-    Create data of the Random Hierarchy Model starting from class labels and a set of rules. Rules are chosen according to probability.
+    Create num_data Random Hierarchy Model data starting from the root prior, a set of rules and their probabilities.
 
     Args:
-        labels: A tensor of size [batch_size, I], with I from 0 to num_classes-1 containing the class labels of the data to be sampled.
+        num_data: The number of trees to generate.
+        prior: A tensor of size rules[0].size(0) (number of possible root values).
         rules: A dictionary containing the rules for each level of the hierarchy.
         probability: A dictionary containing the distribution of the rules for each level of the hierarchy.
 
     Returns:
-        A tuple containing the inputs and outputs of the model.
+        A dictionary with the tree levels.
+        trees[l] is a tensor of size (num_data, s**l).
     """
-    L = len(rules)  # Number of levels in the hierarchy
+    random.seed(seed)
 
-    features = labels
+    L = len(rules)
+    trees = {}
+    if prior is None:
+        labels = torch.randint(low=0, high=rules[0].shape[0], size=(num_data,))
+    else:
+        labels = torch.multinomial(
+                prior, num_data, replacement=True
+        )
+    trees[0] = torch.clone(labels)
 
     for l in range(L):
-        chosen_rule = torch.multinomial(probability[l], features.numel(), replacement=True).reshape(features.shape) # Choose a rule for each variable in the current level according to probability[l]
-        features = rules[l][features, chosen_rule].flatten(start_dim=1)				                                # Apply the chosen rule to each variable in the current level
 
-    return features, labels
+        if probs is None:
+            chosen_rule = torch.randint(low=0, high=rules[l].shape[1], size=labels.shape) # Choose a random rule for each variable in the current level
+        else:
+            chosen_rule = torch.multinomial(
+                probs[l], labels.numel(), replacement=True
+            ).reshape(labels.shape) # Choose a rule for each variable in the current level according to probs[l],
+    
+        labels = rules[l][labels, chosen_rule].flatten(start_dim=1) # Apply the chosen rule to each variable in the current level
+        trees[l+1] = torch.clone(labels)
+
+    return trees
 
 
-def sample_data_from_labels_unif( labels, rules, bonus):
+def sample_trees_unif( num_data, rules, seed=42):
     """
     Create data of the Random Hierarchy Model starting from class labels and a set of rules. Rules are chosen uniformly at random for each level.
 
@@ -75,317 +93,153 @@ def sample_data_from_labels_unif( labels, rules, bonus):
         rules: A dictionary containing the rules for each level of the hierarchy.
 
     Returns:
-        A tuple containing the inputs and outputs of the model.
+        A dictionary with the tree levels.
+        trees[l] is a tensor of size (num_data, s**l).
     """
+    random.seed(seed)
+
     L = len(rules)  # Number of levels in the hierarchy
-
-    features = labels
-
-    if bonus:		# extra output for additional measures
-        if 'size' not in bonus.keys():
-            bonus['size'] = samples.size(0)
-        if 'tree' in bonus:
-            tree = {}
-            bonus['tree'] = tree
-        if 'noise' in bonus:	# add corrupted versions of the last bonus[-1] data
-            noise = {}
-            noise[L] = copy.deepcopy(features[-bonus['size']:])	# copy current representation (labels)...
-            noise[L][:] = torch.randint(rules[0].shape[0], (bonus['size'],))	# ...and randomly change it
-            bonus['noise'] = noise
-        if 'synonyms' in bonus:	# add synonymic versions of the last bonus[-1] data
-            synonyms = {}
-            bonus['synonyms'] = synonyms
+    trees = {}
+    labels = torch.randint(low=0, high=rules[0].shape[0], size=(num_data,))
+    trees[0] = torch.clone(labels)
 
     for l in range(L):
-
-        chosen_rule = torch.randint(low=0, high=rules[l].shape[1], size=features.shape) # Choose a random rule for each variable in the current level
-
-        if bonus:
-            if 'tree' in bonus:
-                tree[L-l] = copy.deepcopy(features[-bonus['size']:])
-
-            if 'synonyms' in bonus:
-
-                for ell in synonyms.keys():	# propagate modified data down the tree TODO: randomise whole downstream propagation
-                    synonyms[ell] = rules[l][synonyms[ell], chosen_rule[-bonus['size']:]].flatten(start_dim=1)
-
-                synon_rule =  copy.deepcopy(chosen_rule[-bonus['size']:]) 		# copy current representation indices...
-                if l==0:
-                    synon_rule[:] = torch.randint(rules[l].shape[1], (synon_rule.size(0),))		# ... and randomly change it (only one index at the highest level)
-                else:
-                    synon_rule[:,-2] = torch.randint(rules[l].shape[1], (synon_rule.size(0),))	# ... and randomly change the next-to-last
-
-                synonyms[L-l] =  copy.deepcopy(features[-bonus['size']:])
-                synonyms[L-l] = rules[l][synonyms[L-l], synon_rule].flatten(start_dim=1)
-                #TODO: add custom positions for 'synonyms'
-
-        features = rules[l][features, chosen_rule].flatten(start_dim=1)                 # Apply the chosen rule to each variable in the current level
-
-        if bonus:
-            if 'noise' in bonus:
-
-                for ell in noise.keys():	# propagate modified data down the tree TODO: randomise whole downstream propagation
-                    noise[ell] = rules[l][noise[ell], chosen_rule[-bonus['size']:]]
-                    noise[ell] = noise[ell].flatten(start_dim=1)
-
-                noise[L-l-1] =  copy.deepcopy(features[-bonus['size']:])	# copy current representation ...
-                noise[L-l-1][:,-2] = torch.randint(rules[l].shape[0], (bonus['size'],))     # ... and randomly change the next-to-last feature
-                #TODO: rules[l].shape[0] not v in general!!! FIX IT!
-                #TODO: add custom positions for 'noise'
+        chosen_rule = torch.randint(low=0, high=rules[l].shape[1], size=labels.shape) # Choose a random rule for each variable in the current level
+        labels = rules[l][labels, chosen_rule].flatten(start_dim=1)                 # Apply the chosen rule to each variable in the current level
+        trees[l+1] = torch.clone(labels)
+    return trees
 
 
-    return features, labels
-
-
-def sample_data_from_indices(samples, rules, v, n, m, s, L, bonus):
+def resample_rules( trees, rules, probs, level, position, p_resample=None, seed=42):
     """
-    Create data of the Random Hierarchy Model starting from a set of rules and the sampled indices.
+    Change the production rules of a set of trees according to a resampling probability.
 
     Args:
-        samples: A tensor of size [batch_size, I], with I from 0 to max_data-1, containing the indices of the data to be sampled.
-        rules: A dictionary containing the rules for each level of the hierarchy.
-        n: The number of classes (int).
-        m: The number of synonymic lower-level representations (multiplicity, int).
-        s: The size of lower-level representations (int).
-        L: The number of levels in the hierarchy (int).
-        bonus: Dictionary for additional output (list), includes 'noise' (randomly replace one symbol at each level), 'synonyms' (randomply resample one production rule at each level), 'tree' (stores the data derivation), 'size' (number of bonus data).
+        trees: A set of RHM derivations.
+        rules: The rules that generated trees.
+        probs: The production rule probabilities.
+        level: The level of the production rule to resample, from 0 to len(rules).
+        position: The position of the production rule to resample, from 0 to s**level
+        p_resample: The resampling probability (tensor of size rules[level].size(1)).
 
     Returns:
-        A tuple containing the inputs and outputs of the model (plus additional output in bonus dict).
+        A dictionary with levels of the modified tree, where the `position'-th production rule at `level' has been resampled.
     """
-    max_data = n * m ** ((s**L-1)//(s-1))
-    data_per_hl = max_data // n 	# div by num_classes to get number of data per class
+    random.seed(seed)
 
-    high_level = samples.div(data_per_hl, rounding_mode='floor')	# div by data_per_hl to get class index (run in range(n))
-    low_level = samples % data_per_hl					# compute remainder (run in range(data_per_hl))
+    L = len(rules)    
+    new_trees = {}
+    
+    # all levels above the new production rule remain unchanged
+    for l in range(level+1):
+        new_trees[l] = torch.clone(trees[l])
 
-    labels = high_level		# labels are the classes (features of highest level)
-    features = labels		# init input features as labels (rep. size 1)
-    size = 1
+    # select the non-terminal whose rule will be resampled
+    span = 1
+    new_features = torch.clone(trees[level][:,position:position+span])
+    # sample new rules and change all the descendants of the position feature at level
+    for l in range(level, L):
 
-    if bonus:		# extra output for additional measures
-        if 'size' not in bonus.keys():
-            bonus['size'] = samples.size(0)
-        if 'tree' in bonus:
-            tree = {}
-            bonus['tree'] = tree
-        if 'noise' in bonus:	# add corrupted versions of the last bonus[-1] data
-            noise = {}
-            noise[L] = copy.deepcopy(features[-bonus['size']:])	# copy current representation (labels)...
-            noise[L][:] = torch.randint(n, (bonus['size'],))	# ...and randomly change it
-            bonus['noise'] = noise
-        if 'synonyms' in bonus:	# add synonymic versions of the last bonus[-1] data
-            synonyms = {}
-            bonus['synonyms'] = synonyms
+        if l==level and p_resample is not None:
+                new_rules = torch.multinomial(
+                    p_resample, new_features.numel(), replacement=True
+                ).reshape(new_features.shape)
 
-    for l in range(L):
+        else:
+            if probs is None:
+                new_rules = torch.randint(low=0, high=rules[l].shape[1], size=new_features.shape)
+            else:
+                new_rules = torch.multinomial(
+                    probs[l], new_features.numel(), replacement=True
+                ).reshape(new_features.shape)
+        new_features = rules[l][new_features, new_rules].flatten(start_dim=1)
 
-        choices = m**(size)
-        data_per_hl = data_per_hl // choices	# div by num_choices to get number of data per high-level feature
+        position *= rules[l].shape[2]
+        span *= rules[l].shape[2]
+        new_trees[l+1] = torch.clone(trees[l+1])
+        new_trees[l+1][:,position:position+span] = new_features
 
-        high_level = low_level.div( data_per_hl, rounding_mode='floor') # div by data_per_hl to get high-level feature index (1 index in range(m**size))
-        high_level = dec2base(high_level, m, length=size).squeeze()     # convert to base m (size indices in range(m), squeeze needed if index already in base m)
-
-        if bonus:
-            if 'tree' in bonus:
-                tree[L-l] = copy.deepcopy(features[-bonus['size']:])
-
-            if 'synonyms' in bonus:
-
-                for ell in synonyms.keys():	# propagate modified data down the tree TODO: randomise whole downstream propagation
-                    synonyms[ell] = rules[l][synonyms[ell], high_level[-bonus['size']:]]
-                    synonyms[ell] = synonyms[ell].flatten(start_dim=1)
-
-                high_level_syn =  copy.deepcopy(high_level[-bonus['size']:]) 			# copy current representation indices...
-                if l==0:
-                    high_level_syn[:] = torch.randint(m, (high_level_syn.size(0),))		# ... and randomly change it (only one index at the highest level)
-                else:
-                    high_level_syn[:,-2] = torch.randint(m, (high_level_syn.size(0),))	# ... and randomly change the next-to-last
-                synonyms[L-l] =  copy.deepcopy(features[-bonus['size']:])
-                synonyms[L-l] = rules[l][synonyms[L-l], high_level_syn]
-                synonyms[L-l] = synonyms[L-l].flatten(start_dim=1)
-                #TODO: add custom positions for 'synonyms'
-        
-        features = rules[l][features, high_level]	        		# apply l-th rule to expand to get features at the lower level (tensor of size (batch_size, size, s))
-        features = features.flatten(start_dim=1)				# flatten to tensor of size (batch_size, size*s)
-        size *= s								# rep. size increases by s at each level
-        low_level = low_level % data_per_hl					# compute remainder (run in range(data_per_hl))
-
-        if bonus:
-            if 'noise' in bonus:
-
-                for ell in noise.keys():	# propagate modified data down the tree TODO: randomise whole downstream propagation
-                    noise[ell] = rules[l][noise[ell], high_level[-bonus['size']:]]
-                    noise[ell] = noise[ell].flatten(start_dim=1)
-
-                noise[L-l-1] =  copy.deepcopy(features[-bonus['size']:])	# copy current representation ...
-                noise[L-l-1][:,-2] = torch.randint(v, (bonus['size'],))	# ... and randomly change the next-to-last feature
-                #TODO: add custom positions for 'noise'
-
-    return features, labels
+    return new_trees
 
 
-class RandomHierarchyModel(Dataset):
+def resample_symbols( trees, rules, probs, level, position, p_resample=None, seed=42):
     """
-    Implement the Random Hierarchy Model (RHM) as a PyTorch dataset.
+    Change the (hidden) symbols of a set of trees according to a resampling probability.
+
+    Args:
+        trees: A set of RHM derivations.
+        rules: The rules that generated trees.
+        probs: The production rule probabilities.
+        level: The level of the symbol to resample, from 0 to len(rules)+1.
+        position: The position of the symbol rule to resample.
+        p_resample: The resampling probability (tensor of size v).
+
+    Returns:
+        A dictionary with levels of the modified tree, where the `position'-th symbol at `level' has been resampled.
+    """
+    random.seed(seed)
+
+    L = len(rules)
+    new_trees = {}
+
+    # all levels above the new production rule remain unchanged
+    for l in range(level+1):
+        new_trees[l] = torch.clone(trees[l])
+
+    # select the non-terminal to resample
+    span = 1
+    if p_resample is None:
+        new_features = torch.randint(
+            low=0, high=rules[level].shape[0], size=(trees[level].shape[0],)
+        ).unsqueeze(-1)
+    else:
+        new_features = torch.multinomial(
+            p_resample, trees[level].shape[0], replacement=True
+        ).unsqueeze(-1)
+    new_trees[level][:,position] = new_features[:,0]
+    # sample new rules and change all the descendants of the position feature at level
+    for l in range(level, L):
+        if probs is None:
+            new_rules = torch.randint(low=0, high=rules[l].shape[1], size=new_features.shape)
+        else:
+            new_rules = torch.multinomial(
+                probs[l], new_features.numel(), replacement=True
+            ).reshape(new_features.shape)
+        new_features = rules[l][new_features, new_rules].flatten(start_dim=1)
+
+        position *= rules[l].shape[2]
+        span *= rules[l].shape[2]
+        new_trees[l+1] = torch.clone(trees[l+1])
+        new_trees[l+1][:,position:position+span] = new_features
+
+    return new_trees
+
+
+class RHM:
+    """
+    Implement the Random Hierarchy Model (RHM).
     """
 
     def __init__(
             self,
-            num_features=8,     # vocavulary size
-            num_classes=2,      # number of classes
-            num_synonyms=2,     # number of synonymic low-level representations (multiplicity)
-            tuple_size=2,       # size of the low-level representations
-            num_layers=2,       # number of levels in the hierarchy
-            probability=None,   # for assigning nonuniform probabilities to production rules
-            seed_rules=0,
-            seed_sample=1,
-            train_size=-1,
-            test_size=0,
-            input_format='onehot',
-            whitening=0,
+            v, # vocabulary size
+            n, # possible root values
+            m, # num. production rules per non-terminal
+            s, # size of production rules
+            L, # number of layers
+            seed_rules,
+            seed_samples,
+            num_data,
+            prior=None,
+            probs=None,
             transform=None,
-            replacement=False,
-            bonus={}
     ):
 
-        self.num_features = num_features
-        self.num_synonyms = num_synonyms 
-        self.num_layers = num_layers
-        self.num_classes = num_classes
-        self.tuple_size = tuple_size
-
-        self.rules = sample_rules( num_features, num_classes, num_synonyms, tuple_size, num_layers, seed=seed_rules)
- 
-        max_data = num_classes * num_synonyms ** ((tuple_size ** num_layers - 1) // (tuple_size - 1))
-        assert train_size >= -1, "train_size must be greater than or equal to -1"
-
-        if max_data > sys.maxsize and not replacement:
-            print(
-                "Max dataset size cannot be represented with int64! Using sampling with replacement."
-            )
-            warnings.warn(
-                "Max dataset size cannot be represented with int64! Using sampling with replacement.",
-                RuntimeWarning,
-            )
-            replacement = True
-
-        if not replacement:
-
-            assert probability is None, "nonuniform probability only implemented for sampling with replacement."
-            if train_size == -1:
-                samples = torch.arange( max_data)
-
-            else:
-                test_size = min( test_size, max_data-train_size)
-                random.seed(seed_sample)
-                samples = torch.tensor( random.sample( range(max_data), train_size+test_size))
-
-            self.features, self.labels = sample_data_from_indices(
-                samples, self.rules, num_features, num_classes, num_synonyms, tuple_size, num_layers, bonus
-            )
-
-        else:
-
-            # TODO: implement synonymic and noisy data for sampling with replacement
-            torch.manual_seed(seed_sample)
-            if train_size == -1:
-                labels = torch.randint(low=0, high=num_classes, size=(max_data + test_size,))
-            else:
-                labels = torch.randint(low=0, high=num_classes, size=(train_size + test_size,))
-            if probability is None:
-                self.features, self.labels = sample_data_from_labels_unif(
-                    labels, self.rules, bonus
-                )
-            else:   # TODO: implement synonymic and noisy data for arbitrary distribution
-                self.probability = probability
-                self.features, self.labels = sample_data_from_labels(
-                    labels, self.rules, self.probability
-                )
-
-
-        if 'onehot' not in input_format:
-            assert not whitening, "Whitening only implemented for one-hot encoding"
-
-        if 'tuples' in input_format:
-            self.features = base2dec(self.features.view(self.features.size(0), -1, tuple_size), num_features)
-            if bonus:
-                if 'synonyms' in bonus:
-                    for k in bonus['synonyms'].keys():
-                        bonus['synonyms'][k] = base2dec(bonus['synonyms'][k].view(bonus['synonyms'][k].size(0), -1, tuple_size), num_features)
-
-                if 'noise' in bonus:
-                    for k in bonus['noise'].keys():
-                        bonus['noise'][k] = base2dec(bonus['noise'][k].view(bonus['synonyms'][k].size(0), -1, tuple_size), num_features)
-
-        if 'onehot' in input_format:
-
-            self.features = F.one_hot(
-                self.features.long(),
-                num_classes=num_features if 'tuples' not in input_format else num_features**tuple_size
-            ).float()
-            if bonus:
-                if 'synonyms' in bonus:
-                    for k in bonus['synonyms'].keys():
-                        bonus['synonyms'][k] = F.one_hot(
-                            bonus['synonyms'][k].long(),
-                            num_classes=num_features if 'tuples' not in input_format else num_features**tuple_size
-                        ).float()
-                        bonus['synonyms'][k] = bonus['synonyms'][k].permute(0, 2, 1)
-                if 'noise' in bonus:
-                    for k in bonus['noise'].keys():
-                        bonus['noise'][k] = F.one_hot(
-                            bonus['noise'][k].long(),
-                            num_classes=num_features if 'tuples' not in input_format else num_features**tuple_size
-                        ).float()
-                        bonus['noise'][k] = bonus['noise'][k].permute(0, 2, 1)
-
-            if whitening:
-
-                inv_sqrt_norm = (1.-1./num_features) ** -.5
-                self.features = (self.features - 1./num_features) * inv_sqrt_norm
-                if bonus:
-                    if 'synonyms' in bonus:
-                        for k in bonus['synonyms'].keys():
-                            bonus['synonyms'][k] = (bonus['synonyms'][k] - 1./num_features) * inv_sqrt_norm
-
-                    if 'noise' in bonus:
-                        for k in bonus['noise'].keys():
-                            bonus['noise'][k] = (bonus['noise'][k] - 1./num_features) * inv_sqrt_norm
-
-            self.features = self.features.permute(0, 2, 1)
-
-        elif 'long' in input_format:
-            self.features = self.features.long() + 1
-
-            if bonus:
-                if 'synonyms' in bonus:
-                    for k in bonus['synonyms'].keys():
-                        bonus['synonyms'][k] = bonus['synonyms'][k].long() + 1
-
-                if 'noise' in bonus:
-                    for k in bonus['noise'].keys():
-                        bonus['noise'][k] = bonus['noise'][k].long() + 1
-
-        else:
-            raise ValueError
+        self.vocab_size = v
+        self.rules = sample_rules( v, n, m, s, L, seed=seed_rules)
+        self.trees = sample_trees(num_data, self.rules, prior=prior, probs=probs, seed=seed_samples)
 
         self.transform = transform
 
     def __len__(self):
-        return len(self.labels)
-
-    def __getitem__(self, idx):
-        """
-        Args:
-        	idx: sample index
-
-        Returns:
-            Feature-label pairs at index            
-        """
-        x, y = self.features[idx], self.labels[idx]
-
-        if self.transform:
-            x, y = self.transform(x, y)
-
-        return x, y
+        return len(self.trees[0])

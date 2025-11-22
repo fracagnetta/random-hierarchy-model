@@ -13,146 +13,117 @@ import measures
 
 class CosineWarmupLR(optim.lr_scheduler._LRScheduler):
 
-    def __init__(self, optimizer, warmup, max_iters):
-        self.warmup = warmup
-        self.max_num_iters = max_iters
+    def __init__(self, optimizer, warmup_time, decay_time, min_lr_factor):
+        self.warmup = warmup_time
+        self.decay = decay_time
+        self.min_lr_factor = min_lr_factor
         super().__init__(optimizer)
 
     def get_lr(self):
-        lr_factor = self.get_lr_factor(epoch=self.last_epoch)
+        lr_factor = self.get_lr_factor(step=self.last_epoch)
         return [base_lr * lr_factor for base_lr in self.base_lrs]
 
-    def get_lr_factor(self, epoch):
-        lr_factor = 0.5 * (1 + np.cos(np.pi * epoch / self.max_num_iters))
-        if epoch <= self.warmup:
-            lr_factor *= epoch * 1.0 / self.warmup
-        return lr_factor
+    def get_lr_factor(self, step):
+        if step < self.warmup:
+            # Linear warmup from 0 to 1
+            return step / self.warmup
+        elif step < self.decay:
+            # Cosine decay to min_lr_factor
+            decay_step = step - self.warmup
+            total_decay = self.decay - self.warmup
+            cosine_decay = 0.5 * (1 + np.cos(np.pi * decay_step / total_decay))
+            return self.min_lr_factor + (1 - self.min_lr_factor) * cosine_decay
+        else:
+            # Stay constant after decay
+            return self.min_lr_factor
 
 
-def init_data(args):
+def transform_inputs( inputs, args):
+
+    B = inputs.shape[0]
+
+    if args.num_tokens < args.input_size:	# only take last num_tokens positions
+        inputs = inputs[:,-args.num_tokens:]
+
+    if 'onehot' not in args.input_format:
+        assert not args.whitening, "Whitening only implemented for one-hot encoding"
+
+    if 'onehot' in args.input_format:
+
+        inputs = F.one_hot(
+            inputs.long(),
+            num_classes=args.num_features
+        ).float() # size B, T, C
+
+        if args.whitening:
+
+            inv_sqrt_norm = (1.-1./args.num_features) ** -.5
+            inputs = (inputs - 1./args.num_features) * inv_sqrt_norm
+
+        inputs = inputs.permute(0, 2, 1) # size B, C, T
+
+        if args.mode == 'last':
+
+            mask = torch.ones(args.num_features)*args.num_features**-.5
+            mask = torch.tile( mask, [B, 1])
+            inputs[:,:,-1] = mask
+
+        if 'fcn' in args.model: # fcn requires flattening of the input
+            inputs = inputs.transpose(1,2).flatten( start_dim=1) # groups of adjacent num_features correspond to a pixel
+
+        if 'transformer' in args.model: # transformer requires B,T,C input format
+            inputs = inputs.transpose(1,2)
+
+
+    elif 'long' in args.input_format:
+
+        inputs = inputs.long()
+        #TODO: add extra indices for missing tokens, include tokenizers
+
+    else:
+        raise ValueError(f'format argumet {args.input_format} is invalid!')
+
+    return inputs
+
+
+def init_data( inputs, targets, args):
     """
     Initialise dataset.
+
+    Args:
+        inputs: A tensor with the inputs (size (B,T)).
+        targets: A tensor with the targets (size (B,*)).
     
     Returns:
         Two dataloaders for train and test set.
     """
-    if args.dataset=='rhm':
 
-        probability = None
+    if args.mode=='class':
+        assert targets is not None, "classification mode requires target labels (tensor of ints, size (B))"
+        # TODO: append classification token for transformers
+    elif args.mode=='last':
+        assert 'onehot' in args.input_format, "last-token prediction mode requires onehot input format"
+        targets = torch.clone(inputs[:,-1])
+    elif args.mode=='auto':
+        assert args.input_format=='long', "autoregressive mode requires long input format"
+        args.num_tokens -= 1
+        targets = torch.clone(inputs[:,1:])
+        inputs = inputs[:,:-1]
 
-        if args.zipf is not None:
-            assert args.layer is not None, "zipf law requires layer of application"
-            probability = {}
-            for l in range(args.num_layers):
-                probability[l] = torch.ones(args.num_synonyms)/args.num_synonyms
-            zipf_prob = torch.zeros(args.num_synonyms)
-            if args.zipf=='inf':
-                zipf_prob[0] = 1.
-                probability[args.layer-1] = zipf_prob
-            else:
-                for i in range(args.num_synonyms):
-                    zipf_prob[i] = (i+1)**(-1-float(args.zipf))
-                probability[args.layer-1] = zipf_prob/zipf_prob.sum()
+    inputs = transform_inputs( inputs, args)
+    # TODO: pass only inputs, transform function, train and test size
 
-        dataset = datasets.RandomHierarchyModel(
-            num_features=args.num_features,	# vocabulary size
-            num_synonyms=args.num_synonyms,	# features multiplicity
-            num_layers=args.num_layers,		# number of layers
-            num_classes=args.num_classes,	# number of classes
-            tuple_size=args.tuple_size,		# number of branches of the tree
-            probability=probability,
-            seed_rules=args.seed_rules,
-            train_size=args.train_size,
-            test_size=args.test_size,
-            seed_sample=args.seed_sample,
-            input_format=args.input_format,
-            whitening=args.whitening,		# 1 for standardising input
-            replacement=args.replacement,	# Automatically true for num_data > 1e19
-            bonus=args.bonus			# bonus dictionary
-        )
-        if args.rules:
-            args.rules = dataset.rules
-
-        args.input_size = args.tuple_size**args.num_layers
-        if args.num_tokens < args.input_size:	# only take last num_tokens positions
-            dataset.features = dataset.features[:,:,-args.num_tokens:]
-
-    else:
-        raise ValueError('dataset argument is invalid!')
-
-    if args.mode == 'masked':	# hide last feature from input and set it as label
-
-        dataset.labels = torch.argmax( dataset.features[:,:,-1],dim=1)
-
-        if 'fcn' in args.model:	# for fcn remove masked token from the input
-            dataset.features = dataset.features[:,:,:-1]
-            args.num_tokens -= 1
-            if args.bonus:
-                if 'synonyms' in args.bonus:
-                    for k in args.bonus['synonyms'].keys():
-                        args.bonus['synonyms'][k] = args.bonus['synonyms'][k][:,:,:-1]
-                if 'noise' in args.bonus:
-                    for k in args.bonus['noise'].keys():
-                        args.bonus['noise'][k] = args.bonus['noise'][k][:,:,:-1]
-
-
-        else:				# for other models replace masked token with ones
-            mask = torch.ones(args.num_features)*args.num_features**-.5
-            mask = torch.tile( mask, [args.train_size+args.test_size, 1])
-            dataset.features[:,:,-1] = mask
-            if args.bonus:
-                if 'synonyms' in args.bonus:
-                    for k in args.bonus['synonyms'].keys():
-                        args.bonus['synonyms'][k][:,:,-1] = mask[-args.bonus['size']:]
-                if 'noise' in args.bonus:
-                    for k in args.bonus['noise'].keys():
-                        args.bonus['noise'][k][:,:,-1] = mask[-args.bonus['size']:]
-
-    if 'fcn' in args.model:		# fcn requires flattening of the input
-        dataset.features = dataset.features.transpose(1,2).flatten( start_dim=1) # groups of adjacent num_features correspond to a pixel
-        if args.bonus:
-            if 'synonyms' in args.bonus:
-                for k in args.bonus['synonyms'].keys():
-                    args.bonus['synonyms'][k] = args.bonus['synonyms'][k].transpose(1,2).flatten( start_dim=1)
-            if 'noise' in args.bonus:
-                for k in args.bonus['noise'].keys():
-                    args.bonus['noise'][k] = args.bonus['noise'][k].transpose(1,2).flatten( start_dim=1)
-
-
-    if 'transformer' in args.model:	# transformer requires [batch_size, seq_len, num_channels] format
-        dataset.features = dataset.features.transpose(1,2)
-        if args.bonus:
-            if 'synonyms' in args.bonus:
-                for k in args.bonus['synonyms'].keys():
-                    args.bonus['synonyms'][k] = args.bonus['synonyms'][k].transpose(1,2)
-            if 'noise' in args.bonus:
-                for k in args.bonus['noise'].keys():
-                    args.bonus['noise'][k] = args.bonus['noise'][k].transpose(1,2)
-
-        # TODO: append classification token to input for transformers used in class
-
-    if args.bonus:
-        if 'synonyms' in args.bonus:
-            for k in args.bonus['synonyms'].keys():
-                args.bonus['synonyms'][k] = args.bonus['synonyms'][k].to(args.device)
-        if 'noise' in args.bonus:
-            for k in args.bonus['noise'].keys():
-                args.bonus['noise'][k] = args.bonus['noise'][k].to(args.device)
-
-    if args.bonus:
-        args.bonus['features'] = dataset.features[-args.bonus['size']:]
-        args.bonus['labels'] = dataset.labels[-args.bonus['size']:]
-
-    trainset = torch.utils.data.Subset(dataset, range(args.train_size))
+    trainset = torch.utils.data.TensorDataset(inputs[:args.train_size], targets[:args.train_size])
     train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
     if args.test_size:
-        testset = torch.utils.data.Subset(dataset, range(args.train_size, args.train_size+args.test_size))
+        testset = torch.utils.data.TensorDataset(inputs[args.train_size:], targets[args.train_size:])
         test_loader = torch.utils.data.DataLoader(testset, batch_size=1024, shuffle=False, num_workers=0)
     else:
         test_loader = None
 
     return train_loader, test_loader
+
 
 def init_model(args):
     """
@@ -233,27 +204,49 @@ def init_model(args):
                 num_heads=args.num_heads,
                 num_layers=args.depth
             )
+        
+        elif args.model == 'transformer_clm':
+
+            if args.ffwd_size is None:
+                args.ffwd_size = 4
+            model = models.CLM(
+                vocab_size=args.num_features,
+                block_size=args.num_tokens,
+                embedding_dim=args.embedding_dim,
+                num_heads=args.num_heads,
+                ffwd_size=args.ffwd_size,
+                num_layers=args.depth,
+                dropout=args.dropout,
+                share_emb=False,
+            )
 
     else:
         raise ValueError('model argument is invalid!')
 
     model = model.to(args.device)
+#     if args.device=='cuda':
+#         model = torch.compile(model)  #TODO: check that this is actually running faster on gpus
+    param_count = sum([p.numel() for p in model.parameters()])
+    print("# parameters:", param_count)
 
     return model
+
 
 def init_training( model, args):
     """
     Initialise training algorithm.
     """
     criterion = nn.CrossEntropyLoss( reduction='mean')
+    #TODO: add other criteria
     
     if args.optim == 'sgd':
         optimizer = optim.SGD(
             model.parameters(), lr=args.lr, momentum=args.momentum
         )
+    #TODO: add arg for weight decay?
     elif args.optim =='adam':
-        optimizer = optim.Adam(
-            model.parameters(), lr=args.lr
+        optimizer = optim.AdamW(
+            model.parameters(), lr=args.lr, weight_decay=0.
         )
     else:
         raise ValueError("optimizer is invalid (sgd, adam)!")
@@ -263,15 +256,19 @@ def init_training( model, args):
             optimizer, step_size=args.max_iters
         )
     elif args.scheduler =='cosine':
+        assert args.decay_time is not None, 'cosine-warmup scheduler requires argument decay_time!'
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=args.scheduler_time, eta_min = 0.1*args.lr
+            optimizer, T_max=args.decay_time, eta_min = 0.1*args.lr
         )
-    elif args.scheduler =='warmup':
+    elif args.scheduler =='cosine-warmup':
+        assert args.warmup_time is not None, 'cosine-warmup scheduler requires argument warmup_time!'
+        assert args.decay_time is not None, 'cosine-warmup scheduler requires argument decay_time!'
         scheduler = CosineWarmupLR(
-            optimizer, args.scheduler_time, max_iters=args.max_iters
+            optimizer, args.warmup_time, args.decay_time, 0.1
         )
 
     return criterion, optimizer, scheduler
+
 
 def init_output( model, criterion, train_loader, test_loader, args):
     """
@@ -280,31 +277,19 @@ def init_output( model, criterion, train_loader, test_loader, args):
     Returns:
         list with the dynamics, best model.
     """
-    testloss, testacc = measures.test(model, test_loader, args.device)
 
-    if args.max_epochs==1:
-        save_dict = {'t': 0, 'testloss': testloss, 'testacc': testacc}
-    else:
-        trainloss, trainacc = measures.test(model, train_loader, args.device)
-        save_dict = {'t': 0, 'trainloss': trainloss, 'trainacc': trainacc, 'testloss': testloss, 'testacc': testacc}
-
-    if args.bonus:
-        if 'synonyms' in args.bonus:
-            save_dict['synonyms'] = measures.sensitivity( model, args.bonus['features'], args.bonus['synonyms'], args.device)
-        if 'noise' in args.bonus:
-            save_dict['noise'] = measures.sensitivity( model, args.bonus['features'], args.bonus['noise'], args.device)
-        if 'generate' in args.bonus:
-            save_dict['predictions'] = measures.predict( model, args.bonus['features'], args.device)
-    
-    if args.check_rules:
-        rules_acc, rules_freq = measures.test_rules(args.rules, model, args.model, test_loader, args.device)
-        save_dict['accuracy'] = rules_acc
-        # save_dict['frequency'] = rules_freq # TODO: what to do with frequency?
-    dynamics = [save_dict]
+    testloss, testacc = measures.test(model, criterion, test_loader, args.device)    
+    print_dict = {'t': 0, 'testloss': testloss, 'testacc': testacc}
+    if args.measure_train:
+        trainloss, trainacc = measures.test(model, criterion, train_loader, args.device)
+        print_dict['trainloss'] = trainloss
+        print_dict['trainacc'] = trainacc
+    dynamics = [print_dict]
 
     best = {'step':0, 'model': None, 'loss': testloss}
 
     return dynamics, best
+
 
 def log2ckpt( end, freq):
     """
@@ -329,6 +314,7 @@ def log2ckpt( end, freq):
     checkpoints.append( round( end))
 
     return checkpoints
+
 
 def init_loglinckpt( step, end, freq):
     """
